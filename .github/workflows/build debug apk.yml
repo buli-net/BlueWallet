@@ -1,4 +1,4 @@
-name: BuildReleaseApk
+name: Build debug apk
 
 on:
   # CHANGED: Thêm workflow_dispatch để có nút run thủ công
