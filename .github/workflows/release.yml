@@ -1,4 +1,4 @@
-name: BuildReleaseApk
+name: BuildReleaseApk test
 
 on:
   workflow_dispatch:          # Nút chạy thủ công
