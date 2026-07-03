@@ -1,7 +1,7 @@
-name: BuildReleaseApk test
+name: BuildReleaseApk
 
 on:
-  workflow_dispatch:        # Nút Run workflow thủ công
+  workflow_dispatch:          # Nút chạy thủ công
   pull_request:
     branches:
       - master
@@ -20,8 +20,7 @@ jobs:
         with:
           fetch-depth: "0"
 
-      - name: Free disk space (Android build)
-        shell: bash
+      - name: Free disk space
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet || true
@@ -43,7 +42,7 @@ jobs:
           node-version: 24
           cache: 'npm'
 
-      - name: Use specific Java version for sdkmanager to work
+      - name: Use specific Java version
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           distribution: 'temurin'
@@ -67,7 +66,7 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platforms;android-36" "platform-tools" "build-tools;36.0.0" "ndk;27.1.12297006"
 
-      - name: Install node_modules (include dev deps for patch-package)
+      - name: Install node_modules
         run: npm ci --yes
 
       - name: Set up Ruby
@@ -76,14 +75,13 @@ jobs:
           ruby-version: 3.4.9
           bundler-cache: true
 
-      - name: Generate Build Number based on timestamp
+      - name: Generate Build Number
         id: build_number
         run: |
           NEW_BUILD_NUMBER="$(date +%s)"
           echo "NEW_BUILD_NUMBER=$NEW_BUILD_NUMBER" >> $GITHUB_ENV
           echo "build_number=$NEW_BUILD_NUMBER" >> $GITHUB_OUTPUT
 
-      # ----- Ký release APK bằng keystore từ secrets -----
       - name: Decode keystore from BASE64
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/keystore.jks
@@ -92,11 +90,12 @@ jobs:
         id: build_release_apk
         run: |
           cd android
-          ./gradlew assembleRelease \
-            -PKEYSTORE_FILE=keystore.jks \
-            -PKEYSTORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}" \
-            -PKEY_ALIAS="${{ secrets.KEY_ALIAS }}" \
-            -PKEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          # Truyền tham số signing qua biến môi trường (Gradle đọc thành property)
+          export ORG_GRADLE_PROJECT_KEYSTORE_FILE="keystore.jks"
+          export ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}"
+          export ORG_GRADLE_PROJECT_KEY_ALIAS="${{ secrets.KEY_ALIAS }}"
+          export ORG_GRADLE_PROJECT_KEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          ./gradlew assembleRelease
         env:
           BUILD_NUMBER: ${{ steps.build_number.outputs.build_number }}
 
@@ -113,6 +112,13 @@ jobs:
             android/**/reports/**/*.log
           if-no-files-found: warn
 
+      # Debug: liệt kê file APK
+      - name: List build outputs
+        run: |
+          find android -name "*.apk" -type f
+          ls -la android/app/build/outputs/apk/ || true
+          ls -la android/app/build/outputs/apk/release/ || true
+
       - name: Determine APK Filename and Path
         id: determine_apk_path
         run: |
@@ -121,15 +127,28 @@ jobs:
           BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}
           BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9_-]/_/g')
 
+          # Tìm APK đầu tiên trong thư mục release
+          APK_SOURCE=$(find android/app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_SOURCE" ]; then
+            # Nếu không có, thử tìm trong toàn bộ dự án
+            APK_SOURCE=$(find android -name "*.apk" -type f | head -n 1)
+          fi
+          if [ -z "$APK_SOURCE" ]; then
+            echo "ERROR: No APK found!"
+            exit 1
+          fi
+
+          echo "Found APK at: $APK_SOURCE"
+
           if [ -n "$BRANCH_NAME" ] && [ "$BRANCH_NAME" != "master" ]; then
             EXPECTED_FILENAME="BlueWallet-Release-${VERSION_NAME}-${BUILD_NUMBER}-${BRANCH_NAME}.apk"
           else
             EXPECTED_FILENAME="BlueWallet-Release-${VERSION_NAME}-${BUILD_NUMBER}.apk"
           fi
 
-          APK_SOURCE="android/app/build/outputs/apk/release/app-release.apk"
-          APK_TARGET="android/app/build/outputs/apk/release/${EXPECTED_FILENAME}"
-          mv "${APK_SOURCE}" "${APK_TARGET}"
+          APK_DIR=$(dirname "$APK_SOURCE")
+          APK_TARGET="${APK_DIR}/${EXPECTED_FILENAME}"
+          mv "$APK_SOURCE" "$APK_TARGET"
 
           echo "EXPECTED_FILENAME=${EXPECTED_FILENAME}" >> $GITHUB_ENV
           echo "APK_PATH=${APK_TARGET}" >> $GITHUB_ENV
@@ -141,7 +160,6 @@ jobs:
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
 
-  # Job BrowserStack – giữ nguyên
   browserstack:
     runs-on: macos-26
     needs: buildReleaseApk
@@ -157,7 +175,7 @@ jobs:
           ruby-version: 3.4.9
           bundler-cache: true
 
-      - name: Install dependencies with Bundler
+      - name: Install dependencies
         run: bundle install --jobs 4 --retry 3
 
       - name: Download APK artifact
